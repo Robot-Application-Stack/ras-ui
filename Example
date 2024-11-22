@@ -1,0 +1,7 @@
+Input: Pick the test tube containing the blue solution and place it at position (1, 2, 3). Then, pour half of it into the beaker. 
+Output:
+pick(container={{type: "test tube", size: "any", contents: "blue solution", landmark: "none"}})
+
+place(container={{type: "test tube", size: "any", contents: "blue solution", landmark: "none"}}, destination_location=(1, 2, 3), landmark="none")
+
+pour(original_container={{type: "test tube", size: "any", contents: "blue solution", landmark: "none"}}, content_name="blue solution", destination_container={{type: "beaker", size: "any", contents: "empty", landmark: "none"}}, volume="half")
