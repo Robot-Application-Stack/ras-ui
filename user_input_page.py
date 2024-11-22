@@ -55,7 +55,7 @@ def upload_file():
 
 @app.route('/submit', methods=['POST'])
 def submit_task():
-    data = request.json
+    data = request.get_json()
     rich_text = data.get('rich_text')
     # Get the OpenAI API key from environment variable
     openai_api_key = os.environ.get('OPENAI_API_KEY')
@@ -66,10 +66,9 @@ def submit_task():
         return jsonify({'error': 'Rich-text instructions are required.'}), 400
 
     try:
-        # Process instructions using api_calls module
-        module_sequence = api_calls.process_instructions(
-            input_text=rich_text,
-            embedding_file='keyword_to_module.txt',  # Ensure this file is in the correct location
+        # Generate module sequence using the simplified function
+        module_sequence = api_calls.generate_module_sequence(
+            input_instruction=rich_text,
             api_key=openai_api_key
         )
         # Return the module sequence
@@ -79,3 +78,4 @@ def submit_task():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
