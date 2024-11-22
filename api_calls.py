@@ -1,284 +1,84 @@
 # api_calls.py
+
 import openai
-import numpy as np
-import spacy
-import logging
-import json
-import re
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Function to generate module sequence using GPT-4
+def generate_module_sequence(input_instruction, api_key):
+    # Initialize OpenAI API key
+    openai.api_key = api_key
 
-# LLM Interface
-class LLMInterface:
-    def __init__(self, api_key=None):
-        self.api_key = api_key
-
-    def generate(self, prompt):
-        raise NotImplementedError("LLMInterface.generate method must be overridden.")
-
-# GPT-4 LLM Implementation
-class GPT4LLM(LLMInterface):
-    def __init__(self, api_key):
-        super().__init__(api_key)
-        if not self.api_key:
-            raise ValueError("OpenAI API key must be provided.")
-        openai.api_key = self.api_key
-
-    def generate(self, prompt):
-        response = openai.ChatCompletion.create(
-            model="gpt-4",  # Ensure you have access to GPT-4
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=500,
-            n=1,
-            stop=None,
-            temperature=0.0,
-        )
-        return response.choices[0].message['content'].strip()
-
-# Load embeddings from a file
-def load_embeddings(embedding_file):
-    embeddings = {}
-    with open(embedding_file, 'r') as f:
-        for line in f:
-            tokens = line.strip().split()
-            word = tokens[0]
-            vector = [float(x) for x in tokens[1:]]
-            embeddings[word] = vector
-    return embeddings
-
-# Parse input text to extract actions and negations
-def parse_input_text(input_text):
-    nlp = spacy.load('en_core_web_sm')
-    doc = nlp(input_text)
-    actions = []
-    negations = []
-    for token in doc:
-        if token.dep_ == 'neg' and token.head.pos_ == 'VERB':
-            negations.append(token.head.lemma_)
-        if token.pos_ == 'VERB':
-            actions.append(token.lemma_)
-    return actions, negations
-
-# Compute cosine similarity
-def cosine_similarity(vec1, vec2):
-    vec1 = np.array(vec1)
-    vec2 = np.array(vec2)
-    if np.linalg.norm(vec1) == 0 or np.linalg.norm(vec2) == 0:
-        return 0
-    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
-
-# Exclude modules similar to negated actions
-def exclude_negated_modules(negations, action_embeddings, module_embeddings, threshold=0.5):
-    excluded_modules = set()
-    for action in negations:
-        if action in action_embeddings:
-            action_embedding = action_embeddings[action]
-            for module_name, module_embedding in module_embeddings.items():
-                sim = cosine_similarity(action_embedding, module_embedding)
-                if sim > threshold:
-                    excluded_modules.add(module_name)
-    return excluded_modules
-
-# Select modules based on similarities
-def select_modules(actions, negations, action_embeddings, module_embeddings, top_k=3, exclusion_threshold=0.5):
-    excluded_modules = exclude_negated_modules(
-        negations, action_embeddings, module_embeddings, threshold=exclusion_threshold)
-    selected_modules = []
-    for action in actions:
-        if action in negations:
-            continue  # Skip negated actions
-        if action not in action_embeddings:
-            logging.warning(f"No embedding found for action '{action}'. Skipping.")
-            continue
-        action_embedding = action_embeddings[action]
-        similarities = {}
-        for module_name, module_embedding in module_embeddings.items():
-            if module_name in excluded_modules:
-                continue  # Skip excluded modules
-            sim = cosine_similarity(action_embedding, module_embedding)
-            similarities[module_name] = sim
-        # Sort modules by similarity
-        sorted_modules = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
-        # Select top_k modules
-        top_modules = [module for module, sim in sorted_modules[:top_k]]
-        selected_modules.extend(top_modules)
-    # Remove duplicates
-    selected_modules = list(set(selected_modules))
-    return selected_modules
-
-# Extract parameters using GPT
-def extract_parameters_with_gpt(input_text, module_name, llm):
+    # Elaborate prompt to guide GPT-4
     prompt = f"""
-Given the instruction: "{input_text}"
+You are an AI assistant that converts natural language instructions into a sequence of module calls with appropriate parameters.
 
-Extract the parameters required for the module "{module_name}" in the format of a JSON object.
+**Available Modules:**
 
-The parameters should match the following schema based on the module:
+1. **pick**:
+   - **Parameters**:
+     - `container`: A dictionary with the following keys:
+       - `type`: The type of container (e.g., "beaker", "test tube").
+       - `size`: Any size information if provided; otherwise, "any".
+       - `contents`: The contents of the container if specified; otherwise, "empty".
+       - `landmark`: A landmark if specified; otherwise, "none".
+   - **Usage**:
+     ```
+     pick(container={{type: ..., size: ..., contents: ..., landmark: ...}})
+     ```
 
-For 'pick':
-{{
-  "container": {{
-    "type": string,
-    "id": string (if available),
-    "content_name": string (if available),
-    "content_volume": string (if available),
-    "content_color": string (if available),
-    "position": string (e.g., "(x, y, z)" if available),
-    "landmark": string (if available)
-  }}
-}}
+2. **pour**:
+   - **Parameters**:
+     - `original_container`: A dictionary similar to the `container` in `pick`.
+     - `content_name`: The name of the content to pour.
+     - `destination_container`: A dictionary for the destination container. Use `"active container"` if not specified.
+     - `volume`: The volume to pour; use "all" if not specified.
+   - **Usage**:
+     ```
+     pour(original_container={{...}}, content_name=..., destination_container={{...}}, volume=...)
+     ```
 
-For 'place':
-{{
-  "container": {{
-    "type": string,
-    "id": string (if available),
-    "content_name": string (if available),
-    "content_volume": string (if available),
-    "content_color": string (if available),
-    "position": string (if available),
-    "landmark": string (if available)
-  }},
-  "destination_location": string (e.g., "(x, y, z)" if available),
-  "landmark": string (if available)
-}}
+3. **place**:
+   - **Parameters**:
+     - `container`: A dictionary similar to the `container` in `pick`.
+     - `destination_location`: The destination location if an (x, y, z) coordinate is provided; otherwise, "none".
+     - `landmark`: A landmark if specified; otherwise, "none".
+   - **Usage**:
+     ```
+     place(container={{...}}, destination_location=..., landmark=...)
+     ```
 
-For 'moveto':
-{{
-  "original_container": {{
-    "type": string,
-    "id": string (if available),
-    "position": string (if available),
-    "landmark": string (if available)
-  }},
-  "destination": string (e.g., "(x, y, z)" if available),
-  "landmark": string (if available)
-}}
+4. **moveto**:
+   - **Parameters**:
+     - `original_container`: A dictionary similar to the `container` in `pick`.
+     - `destination`: The destination if an (x, y, z) coordinate is provided; otherwise, "none".
+     - `landmark`: A landmark if specified; otherwise, "none".
+   - **Usage**:
+     ```
+     moveto(original_container={{...}}, destination=..., landmark=...)
+     ```
 
-For 'pour':
-{{
-  "original_container": {{
-    "type": string (if available),
-    "id": string (if available),
-    "content_name": string (if available),
-    "content_volume": string (if available),
-    "content_color": string (if available),
-    "position": string (if available),
-    "landmark": string (if available)
-  }},
-  "destination_container": {{
-    "type": string (if available),
-    "id": string (if available),
-    "position": string (if available),
-    "landmark": string (if available)
-  }},
-  "volume": string (e.g., "all" or specific amount)
-}}
+**Instructions:**
 
-Important rules:
-- If an (x, y, z) position is provided in the instruction, set 'position' to that value.
-- If no (x, y, z) position is provided, set 'position' to 'none'.
-- For 'place' and 'moveto' modules:
-  - If an (x, y, z) position is provided for the destination, set 'destination_location' or 'destination' to that value.
-  - If no (x, y, z) position is provided, set 'destination_location' or 'destination' to 'none', even if a landmark like 'table' is mentioned.
-- 'landmark' can be set if a landmark is mentioned.
+- **Extract as much information as possible** from the input instruction to fill the parameters.
+- **If a parameter is not specified**, use the default values as described.
+- **Do not query any external data sources**; rely solely on the input instruction.
+- **Handle negations** appropriately. If an action is negated in the instruction (e.g., "Do not pour"), do not include that module in the sequence.
+- **Sequence the modules** in the order that makes sense based on the instruction.
 
-Please provide the parameters as a JSON object.
+**Now, process the following instruction and generate the module sequence:**
 
-If a parameter is not available from the instruction, you can omit it or set it to null.
+\"\"\"{input_instruction}\"\"\"
 """
 
-    response = llm.generate(prompt)
-    # Parse the JSON from the response
-    try:
-        # Extract JSON from the response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            parameters_json = json_match.group()
-            parameters = json.loads(parameters_json)
-            return parameters
-        else:
-            logging.warning(f"Could not extract JSON parameters from GPT response: {response}")
-            return {}
-    except Exception as e:
-        logging.warning(f"Error parsing parameters from GPT response: {e}")
-        return {}
+    # Call GPT-4 to generate the module sequence
+    response = openai.ChatCompletion.create(
+        model='gpt-4',
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=500,
+        temperature=0.0,
+        n=1,
+        stop=None
+    )
 
-# Post-process parameters to enforce 'destination_location' rule
-def post_process_parameters(parameters, module_name):
-    if module_name in ['place', 'moveto']:
-        # For 'place' module
-        if module_name == 'place':
-            if 'destination_location' in parameters:
-                dest_loc = parameters['destination_location']
-                # If 'destination_location' is not in (x, y, z) format, set it to 'none'
-                if not re.match(r'^\(\s*-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?\s*\)$', str(dest_loc)):
-                    parameters['destination_location'] = 'none'
-        # For 'moveto' module
-        if module_name == 'moveto':
-            if 'destination' in parameters:
-                dest = parameters['destination']
-                # If 'destination' is not in (x, y, z) format, set it to 'none'
-                if not re.match(r'^\(\s*-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?\s*\)$', str(dest)):
-                    parameters['destination'] = 'none'
-    return parameters
-
-# Generate the sequence of modules with parameters using GPT
-def generate_module_sequence_with_parameters(selected_modules, input_text, llm):
-    module_sequence = []
-    for module in selected_modules:
-        parameters = extract_parameters_with_gpt(input_text, module, llm)
-        if not parameters:
-            continue  # Skip if parameters could not be extracted
-        # Post-process parameters to enforce 'destination_location' rule
-        parameters = post_process_parameters(parameters, module)
-        # Convert parameters to string representation
-        params_str = json.dumps(parameters)
-        module_call = f"{module}({params_str})"
-        module_sequence.append(module_call)
-    # Return the sequence as a single string separated by commas
-    return ', '.join(module_sequence)
-
-# Process instructions function
-def process_instructions(input_text, embedding_file='keyword_to_module.txt', module_names=['pick', 'place', 'moveto', 'pour'], api_key=None):
-    # Load embeddings
-    embeddings = load_embeddings(embedding_file)
-
-    # Extract module embeddings
-    module_embeddings = {name: embeddings[name] for name in module_names if name in embeddings}
-    missing_modules = set(module_names) - set(module_embeddings.keys())
-    if missing_modules:
-        raise ValueError(f"Embeddings for modules {missing_modules} not found in the embedding file.")
-
-    # Parse input text
-    actions, negations = parse_input_text(input_text)
-    logging.info(f"Actions: {actions}")
-    logging.info(f"Negations: {negations}")
-
-    # Collect unique action words
-    unique_actions = set(actions + negations)
-
-    # Extract action embeddings
-    action_embeddings = {action: embeddings[action] for action in unique_actions if action in embeddings}
-    missing_actions = unique_actions - set(action_embeddings.keys())
-    if missing_actions:
-        logging.warning(f"Embeddings for actions {missing_actions} not found in the embedding file.")
-
-    # Select modules
-    selected_modules = select_modules(actions, negations, action_embeddings, module_embeddings)
-    logging.info(f"Selected Modules: {selected_modules}")
-
-    if not selected_modules:
-        raise ValueError("No modules selected. Cannot generate module sequence.")
-
-    # Initialize LLM
-    llm = GPT4LLM(api_key=api_key)
-
-    # Generate module sequence with parameters using GPT
-    module_sequence = generate_module_sequence_with_parameters(selected_modules, input_text, llm)
-
-    # Log the final module sequence
-    logging.info(f"Final Module Sequence: {module_sequence}")
-
+    # Extract and return the generated module sequence
+    module_sequence = response['choices'][0]['message']['content'].strip()
     return module_sequence
