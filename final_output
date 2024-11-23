@@ -1,0 +1,6 @@
+Final Module Sequence:
+pick(container={ id: "B", aruco_id: "102" })
+
+pour(original_container={ id: "B", aruco_id: "102" }, destination_container={ id: "A", aruco_id: "101" }, volume="half")
+
+place(container={ id: "B", aruco_id: "102" }, destination_location="(1,2,3")
